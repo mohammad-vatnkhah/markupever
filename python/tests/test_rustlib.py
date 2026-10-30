@@ -638,3 +638,87 @@ def test_iter_submodule():
 
     for name in rl.iter.__all__:
         assert getattr(rl.iter, name).__module__ == "markupever._rustlib.iter", name
+
+
+
+def test_select_pseudo_classes():
+    parser = rl.Parser(rl.HtmlOptions())
+    parser.process(
+        '<html id="document-root"><head><link id="stylesheet" href="/site.css"></head>'
+        '<body><a id="anchor" href="#target"></a><a id="plain-anchor"></a>'
+        '<area id="area" href="#target"></body></html>'
+    )
+    parser.finish()
+    dom = parser.into_dom()
+
+    def selected_ids(expression):
+        return [
+            _get_attr(node.attrs, "id")[1]
+            for node in rl.Select(dom.root(), expression)
+        ]
+
+    assert selected_ids(":root") == ["document-root"]
+    assert selected_ids(":link") == ["stylesheet", "anchor", "area"]
+    assert selected_ids("#plain-anchor:link") == []
+
+    body = next(iter(rl.Select(dom.root(), "body")))
+
+    empty_text = rl.Element(
+        dom, rl.QualName("div", "html"), [("id", "empty-text")], False, False
+    )
+    comment_only = rl.Element(
+        dom, rl.QualName("div", "html"), [("id", "comment-only")], False, False
+    )
+    whitespace = rl.Element(
+        dom, rl.QualName("div", "html"), [("id", "whitespace")], False, False
+    )
+
+    for element in (empty_text, comment_only, whitespace):
+        dom.append(body, element)
+
+    dom.append(empty_text, rl.Text(dom, ""))
+    dom.append(comment_only, rl.Comment(dom, "ignored"))
+    dom.append(whitespace, rl.Text(dom, " "))
+
+    assert selected_ids("#empty-text:empty") == ["empty-text"]
+    assert selected_ids("#comment-only:empty") == ["comment-only"]
+    assert selected_ids("#whitespace:empty") == []
+
+
+def test_unqualified_id_and_class_selectors_ignore_namespaced_attributes():
+    dom = rl.TreeDom(namespaces={"ns": "urn:example"})
+    element = rl.Element(
+        dom,
+        "item",
+        [
+            (rl.QualName("id", "urn:example", "ns"), "namespaced-id"),
+            ("id", "plain-id"),
+            (rl.QualName("class", "urn:example", "ns"), "namespaced-class"),
+            ("class", "plain-class"),
+        ],
+        False,
+        False,
+    )
+    dom.append(dom.root(), element)
+
+    assert len(list(rl.Select(dom.root(), "#plain-id"))) == 1
+    assert len(list(rl.Select(dom.root(), "#namespaced-id"))) == 0
+    assert len(list(rl.Select(dom.root(), ".plain-class"))) == 1
+    assert len(list(rl.Select(dom.root(), ".namespaced-class"))) == 0
+    assert len(list(rl.Select(dom.root(), "[ns|id]"))) == 1
+
+
+def test_detaching_a_node_preserves_namespaces_still_in_use():
+    dom = rl.TreeDom()
+    first = rl.Element(dom, rl.QualName("first", "urn:example", "ns"), [], False, False)
+    second = rl.Element(dom, rl.QualName("second", "urn:example", "ns"), [], False, False)
+
+    dom.append(dom.root(), first)
+    dom.append(dom.root(), second)
+    assert dom.namespaces() == {"ns": "urn:example"}
+
+    dom.detach(first)
+    assert dom.namespaces() == {"ns": "urn:example"}
+
+    dom.detach(second)
+    assert dom.namespaces() == {}

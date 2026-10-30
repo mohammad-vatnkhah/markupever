@@ -140,7 +140,14 @@ impl selectors::Element for CssNodeRef<'_> {
     }
 
     fn is_link(&self) -> bool {
-        &self.0.value().element().unwrap().name.local == "link"
+        let element = self.0.value().element().unwrap();
+
+        element.name.ns == ns!(html)
+            && matches!(&*element.name.local, "a" | "area" | "link")
+            && element
+                .attrs
+                .iter()
+                .any(|(name, _)| name.ns.is_empty() && &*name.local == "href")
     }
 
     fn is_html_slot_element(&self) -> bool {
@@ -181,14 +188,19 @@ impl selectors::Element for CssNodeRef<'_> {
     }
 
     fn is_empty(&self) -> bool {
-        !self.0.children().any(|x| {
-            let v = x.value();
-            v.is_element() || v.is_text()
+        !self.0.children().any(|child| {
+            let value = child.value();
+            value.is_element()
+                || value
+                    .text()
+                    .is_some_and(|text| !text.contents.is_empty())
         })
     }
 
     fn is_root(&self) -> bool {
-        self.0.value().is_document()
+        self.0
+            .parent()
+            .is_some_and(|parent| parent.value().is_document())
     }
 
     fn apply_selector_flags(&self, _flags: selectors::matching::ElementSelectorFlags) {}

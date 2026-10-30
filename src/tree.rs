@@ -19,6 +19,24 @@ impl PyTreeDom {
     }
 
     #[inline]
+    fn same_contents(&self, other: &Self) -> bool {
+        if Arc::ptr_eq(&self.dom, &other.dom) {
+            return true;
+        }
+
+        // Lock the two DOMs in a stable order so opposite comparisons cannot deadlock.
+        let self_address = Arc::as_ptr(&self.dom) as usize;
+        let other_address = Arc::as_ptr(&other.dom) as usize;
+        let (first, second) = if self_address < other_address {
+            (self.dom.lock(), other.dom.lock())
+        } else {
+            (other.dom.lock(), self.dom.lock())
+        };
+
+        *first == *second
+    }
+
+    #[inline]
     fn add_new_namespace(
         &self,
         mut lock: ::parking_lot::MutexGuard<'_, ::treedom::IDTreeDOM>,
@@ -46,12 +64,41 @@ impl PyTreeDom {
         mut lock: ::parking_lot::MutexGuard<'_, ::treedom::IDTreeDOM>,
         id: ::treedom::NodeId,
     ) {
-        let child = lock.get(id).unwrap();
-
-        if let Some(elem) = child.value().element()
-            && let Some(prefix) = elem.name.prefix.clone()
+        let mut detached_prefixes = Vec::new();
         {
-            lock.namespaces_mut().remove(&prefix);
+            let detached = lock.get(id).unwrap();
+            if let Some(element) = detached.value().element()
+                && let Some(prefix) = element.name.prefix.clone()
+            {
+                detached_prefixes.push(prefix);
+            }
+
+            for descendant in detached.descendants() {
+                if let Some(element) = descendant.value().element()
+                    && let Some(prefix) = element.name.prefix.clone()
+                    && !detached_prefixes.contains(&prefix)
+                {
+                    detached_prefixes.push(prefix);
+                }
+            }
+        }
+
+        let active_namespaces = {
+            let root = lock.root();
+            root.descendants()
+                .filter_map(|node| {
+                    let element = node.value().element()?;
+                    Some((element.name.prefix.clone()?, element.name.ns.clone()))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+
+        for prefix in detached_prefixes {
+            if let Some(namespace) = active_namespaces.get(&prefix) {
+                lock.namespaces_mut().insert(prefix, namespace.clone());
+            } else {
+                lock.namespaces_mut().remove(&prefix);
+            }
         }
     }
 }
@@ -420,14 +467,7 @@ impl PyTreeDom {
                     Err(_) => return Ok(false),
                 };
 
-                if Arc::ptr_eq(&self_.get().dom, &other.dom) {
-                    Ok(true)
-                } else {
-                    let t1 = self_.get().dom.lock();
-                    let t2 = other.dom.lock();
-
-                    Ok(*t1 == *t2)
-                }
+                Ok(self_.get().same_contents(&other))
             }
             pyo3::basic::CompareOp::Ne => {
                 let other = match other.extract::<pyo3::PyRef<'_, Self>>(self_.py()) {
@@ -435,14 +475,7 @@ impl PyTreeDom {
                     Err(_) => return Ok(false),
                 };
 
-                if Arc::ptr_eq(&self_.get().dom, &other.dom) {
-                    Ok(false)
-                } else {
-                    let t1 = self_.get().dom.lock();
-                    let t2 = other.dom.lock();
-
-                    Ok(*t1 != *t2)
-                }
+                Ok(!self_.get().same_contents(&other))
             }
             pyo3::basic::CompareOp::Gt => {
                 crate::nodes::create_richcmp_notimplemented!('>', self_)

@@ -159,7 +159,7 @@ impl ElementAttributes {
             .get_or_init(|| {
                 self.list
                     .iter()
-                    .find(|(name, _)| name == "id")
+                    .find(|(name, _)| name.ns.is_empty() && &*name.local == "id")
                     .map(|(_, value)| value.clone())
             })
             .as_deref()
@@ -171,7 +171,7 @@ impl ElementAttributes {
             let mut classes = self
                 .list
                 .iter()
-                .filter(|(name, _)| &*name.local == "class")
+                .filter(|(name, _)| name.ns.is_empty() && &*name.local == "class")
                 .flat_map(|(_, value)| {
                     value
                         .split_ascii_whitespace()
